@@ -309,9 +309,21 @@ final class MangaViewController: NSViewController {
         let visibleRange = containerView.visiblePageRange(in: scrollView.contentView.bounds)
         updateDebugPosition(visibleRange: visibleRange)
         guard !isLoadingPageWindow else { return }
-        if scrollingDown, pages.count - visibleRange.upperBound <= prefetchThreshold {
+        if scrollingDown,
+           MangaPagePrefetchPolicy.shouldPrefetch(
+               direction: .forward,
+               visibleRange: visibleRange,
+               pageCount: pages.count,
+               threshold: prefetchThreshold
+           ) {
             requestForward()
-        } else if scrollingUp, scrollView.contentView.bounds.minY < -1 {
+        } else if scrollingUp,
+                  MangaPagePrefetchPolicy.shouldPrefetch(
+                      direction: .backward,
+                      visibleRange: visibleRange,
+                      pageCount: pages.count,
+                      threshold: prefetchThreshold
+                  ) {
             requestBackward()
         }
     }
@@ -430,9 +442,10 @@ final class MangaViewController: NSViewController {
         let oldY = scrollView.contentView.bounds.minY
         pages = Array(updated.dropLast(removeCount))
         containerView.setPages(pages)
-        containerView.relayout()
+        containerView.relayout(updateVisibleViews: false)
         let y = oldY + addedHeight
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: y))
+        containerView.updateVisiblePageViews(in: scrollView.contentView.bounds)
         lastScrollY = y
 #if DEBUG
         if !removed.isEmpty {
@@ -521,7 +534,7 @@ final class PageContainerView: NSView {
         return first..<(last + 1)
     }
 
-    func relayout() {
+    func relayout(updateVisibleViews: Bool = true) {
         guard let scrollView = enclosingScrollView else { return }
         let width = scrollView.contentSize.width
         guard width > 0 else { return }
@@ -537,7 +550,9 @@ final class PageContainerView: NSView {
             return pageFrame
         }
         frame.size = CGSize(width: width, height: max(y, 1))
-        updateVisiblePageViews(in: scrollView.contentView.bounds)
+        if updateVisibleViews {
+            updateVisiblePageViews(in: scrollView.contentView.bounds)
+        }
     }
 
     func updateVisiblePageViews(in bounds: NSRect) {

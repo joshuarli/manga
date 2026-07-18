@@ -60,3 +60,25 @@ struct MangaPageWindow {
         return removed
     }
 }
+
+enum MangaPagePrefetchDirection {
+    case forward
+    case backward
+}
+
+struct MangaPagePrefetchPolicy {
+    static func shouldPrefetch(
+        direction: MangaPagePrefetchDirection,
+        visibleRange: Range<Int>,
+        pageCount: Int,
+        threshold: Int
+    ) -> Bool {
+        guard !visibleRange.isEmpty else { return false }
+        switch direction {
+        case .forward:
+            return pageCount - visibleRange.upperBound <= threshold
+        case .backward:
+            return visibleRange.lowerBound <= threshold
+        }
+    }
+}

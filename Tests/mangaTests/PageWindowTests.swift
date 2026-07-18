@@ -73,6 +73,72 @@ final class PageWindowTests: XCTestCase {
         XCTAssertEqual(window.pages, (1..<6).map { MangaPageID(chapter: 0, page: $0) })
     }
 
+    func testForwardPrefetchEvictsPagesFromTheBackwardSide() {
+        var window = MangaPageWindow(
+            pages: (0..<48).map { MangaPageID(chapter: 0, page: $0) },
+            capacity: 48
+        )
+
+        let removed = window.append((48..<56).map { MangaPageID(chapter: 0, page: $0) })
+
+        XCTAssertEqual(removed, (0..<8).map { MangaPageID(chapter: 0, page: $0) })
+        XCTAssertEqual(window.pages, (8..<56).map { MangaPageID(chapter: 0, page: $0) })
+    }
+
+    func testBackwardPrefetchEvictsPagesFromTheForwardSide() {
+        var window = MangaPageWindow(
+            pages: (8..<56).map { MangaPageID(chapter: 0, page: $0) },
+            capacity: 48
+        )
+
+        let removed = window.prepend((0..<8).map { MangaPageID(chapter: 0, page: $0) })
+
+        XCTAssertEqual(removed, (48..<56).map { MangaPageID(chapter: 0, page: $0) })
+        XCTAssertEqual(window.pages, (0..<48).map { MangaPageID(chapter: 0, page: $0) })
+    }
+
+    func testPrefetchThresholdIsSymmetricAtBothWindowEdges() {
+        XCTAssertTrue(MangaPagePrefetchPolicy.shouldPrefetch(
+            direction: .forward,
+            visibleRange: 20..<28,
+            pageCount: 48,
+            threshold: 20
+        ))
+        XCTAssertFalse(MangaPagePrefetchPolicy.shouldPrefetch(
+            direction: .forward,
+            visibleRange: 19..<27,
+            pageCount: 48,
+            threshold: 20
+        ))
+        XCTAssertTrue(MangaPagePrefetchPolicy.shouldPrefetch(
+            direction: .backward,
+            visibleRange: 20..<28,
+            pageCount: 48,
+            threshold: 20
+        ))
+        XCTAssertFalse(MangaPagePrefetchPolicy.shouldPrefetch(
+            direction: .backward,
+            visibleRange: 21..<29,
+            pageCount: 48,
+            threshold: 20
+        ))
+    }
+
+    func testPrefetchPolicyDoesNotPrefetchForEmptyVisibleRange() {
+        XCTAssertFalse(MangaPagePrefetchPolicy.shouldPrefetch(
+            direction: .forward,
+            visibleRange: 0..<0,
+            pageCount: 48,
+            threshold: 20
+        ))
+        XCTAssertFalse(MangaPagePrefetchPolicy.shouldPrefetch(
+            direction: .backward,
+            visibleRange: 0..<0,
+            pageCount: 48,
+            threshold: 20
+        ))
+    }
+
     private var afterFirstPage: MangaPageID {
         MangaPageID(chapter: 0, page: 0)
     }
