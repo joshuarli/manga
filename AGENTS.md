@@ -4,7 +4,7 @@
 
 `manga` is a Swift Package Manager macOS CBZ manga viewer. It is a standard `NSApplication` (not accessory). The entry point is `Sources/manga/App.swift`.
 
-The deployment target is macOS 15.0 or newer.
+The deployment target is macOS 26.0 or newer. The package uses Swift tools 6.2 and Swift 6 language mode.
 
 Core files:
 
@@ -93,3 +93,5 @@ Window resizes trigger relayout of retained page geometry via `viewDidLayout()` 
 ## Editing Notes
 
 Keep changes small and local. This is a compact AppKit codebase. No external dependencies beyond Foundation and AppKit. Prefer preserving existing direct style over adding abstractions.
+
+AppKit and application state are main-actor isolated. Background page loading uses `@Sendable` closures and the archive-loading methods on `MangaWindowController` are explicitly nonisolated because their shared book state is protected by `NSLock`. Do not move AppKit objects or UI state into the background loader.

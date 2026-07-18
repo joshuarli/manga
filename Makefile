@@ -16,6 +16,9 @@ build:
 	codesign -fs - .build/debug/$(BIN)
 	xattr -d com.apple.quarantine $(PWD)/.build/debug/$(BIN) 2>/dev/null || true
 
+lint:
+	swiftlint lint
+
 $(ICON_PNG):
 	mkdir -p .build
 	swift -e 'import AppKit; let size = NSSize(width: 1024, height: 1024); let image = NSImage(size: size); image.lockFocus(); NSColor(red: 0.2, green: 0.2, blue: 0.25, alpha: 1.0).setFill(); NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill(); image.unlockFocus(); let rep = NSBitmapImageRep(data: image.tiffRepresentation!)!; try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "$(ICON_PNG)"))'

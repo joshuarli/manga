@@ -1,6 +1,7 @@
 import AppKit
 
 @main
+@MainActor
 struct Manga {
     private static var delegate: AppDelegate?
 
@@ -14,6 +15,7 @@ struct Manga {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var viewerController: MangaWindowController?
     private var libraryController: LibraryWindowController?

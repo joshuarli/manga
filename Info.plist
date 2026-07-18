@@ -20,6 +20,8 @@
 	<string>icon</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
 	<key>CFBundleDocumentTypes</key>

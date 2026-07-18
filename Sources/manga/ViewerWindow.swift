@@ -91,10 +91,10 @@ final class CBZBook {
 }
 
 final class MangaWindowController: NSWindowController {
-    private var books: [Int: CBZBook]
-    private let booksLock = NSLock()
-    private var isClosed = false
-    private let chapters: [URL]
+    nonisolated(unsafe) private var books: [Int: CBZBook]
+    nonisolated private let booksLock = NSLock()
+    nonisolated(unsafe) private var isClosed = false
+    nonisolated private let chapters: [URL]
     private let currentIndex: Int
     private var viewController: MangaViewController!
 
@@ -151,7 +151,7 @@ final class MangaWindowController: NSWindowController {
         books.forEach { $0.cleanup() }
     }
 
-    private func book(at chapter: Int) -> CBZBook? {
+    nonisolated private func book(at chapter: Int) -> CBZBook? {
         guard chapters.indices.contains(chapter) else { return nil }
         booksLock.lock()
         defer { booksLock.unlock() }
@@ -167,11 +167,11 @@ final class MangaWindowController: NSWindowController {
         return book
     }
 
-    private func pageCount(chapter: Int) -> Int {
+    nonisolated private func pageCount(chapter: Int) -> Int {
         book(at: chapter)?.pageCount ?? 0
     }
 
-    private func loadPage(_ id: MangaPageID, maxPixelWidth: Int) -> NSImage? {
+    nonisolated private func loadPage(_ id: MangaPageID, maxPixelWidth: Int) -> NSImage? {
         guard chapters.indices.contains(id.chapter) else {
 #if DEBUG
             print("[manga] skipped invalid chapter index \(id.chapter) for page \(id.page + 1)")
@@ -205,12 +205,12 @@ final class MangaViewController: NSViewController {
     private let prefetchBatchSize = 8
     private let prefetchThreshold = 20
     private let startingChapter: Int
-    private let pageCount: (Int) -> Int
-    private let loadPage: (MangaPageID, Int) -> NSImage?
+    private let pageCount: @Sendable (Int) -> Int
+    private let loadPage: @Sendable (MangaPageID, Int) -> NSImage?
     private let titleForPage: (MangaPageID) -> String
     private let scrollView = NSScrollView()
     private var containerView: PageContainerView?
-    private var boundsObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var boundsObserver: NSObjectProtocol?
     private var pages: [LoadedMangaPage] = []
     private var isMaintainingPageWindow = false
     private var isLoadingPageWindow = false
@@ -223,8 +223,8 @@ final class MangaViewController: NSViewController {
 
     init(
         chapterIndex: Int,
-        pageCount: @escaping (Int) -> Int,
-        loadPage: @escaping (MangaPageID, Int) -> NSImage?,
+        pageCount: @escaping @Sendable (Int) -> Int,
+        loadPage: @escaping @Sendable (MangaPageID, Int) -> NSImage?,
         titleForPage: @escaping (MangaPageID) -> String
     ) {
         self.startingChapter = chapterIndex
@@ -273,7 +273,9 @@ final class MangaViewController: NSViewController {
             object: scrollView.contentView,
             queue: .main
         ) { [weak self] _ in
-            self?.maintainPageWindow()
+            Task { @MainActor [weak self] in
+                self?.maintainPageWindow()
+            }
         }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -295,7 +297,51 @@ final class MangaViewController: NSViewController {
         return LoadedMangaPage(id: id, image: image)
     }
 
-    private func maintainPageWindow() {
+    nonisolated private static func nextPage(after id: MangaPageID, pageCount: (Int) -> Int) -> MangaPageID? {
+        MangaPageNavigation.nextPage(after: id, pageCount: pageCount)
+    }
+
+    nonisolated private static func previousPage(before id: MangaPageID, pageCount: (Int) -> Int) -> MangaPageID? {
+        MangaPageNavigation.previousPage(before: id, pageCount: pageCount)
+    }
+
+#if DEBUG
+    private func updateDebugPosition(visibleRange: Range<Int>) {
+        guard pages.indices.contains(visibleRange.lowerBound) else { return }
+        let page = pages[visibleRange.lowerBound]
+        guard lastDebugPageID != page.id else { return }
+        lastDebugPageID = page.id
+        let title = titleForPage(page.id)
+        debugPositionLabel.stringValue = "\(title) chapter \(page.id.chapter + 1) page \(page.id.page + 1)"
+    }
+#else
+    private func updateDebugPosition(visibleRange: Range<Int>) {}
+#endif
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        scrollView.frame = view.bounds
+        containerView?.relayout()
+        updateDebugPosition(visibleRange: containerView?.visiblePageRange(in: scrollView.contentView.bounds) ?? 0..<0)
+#if DEBUG
+        debugPositionLabel.frame = NSRect(
+            x: max(0, view.bounds.width - 340),
+            y: 8,
+            width: min(332, view.bounds.width),
+            height: 20
+        )
+#endif
+    }
+
+    deinit {
+        if let observer = boundsObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+}
+
+private extension MangaViewController {
+    func maintainPageWindow() {
         guard !isMaintainingPageWindow else { return }
         isMaintainingPageWindow = true
         defer { isMaintainingPageWindow = false }
@@ -328,7 +374,7 @@ final class MangaViewController: NSViewController {
         }
     }
 
-    private func requestForward() {
+    func requestForward() {
         guard let anchor = pages.last?.id else { return }
         isLoadingPageWindow = true
         let pageCount = self.pageCount
@@ -364,7 +410,7 @@ final class MangaViewController: NSViewController {
         }
     }
 
-    private func applyForward(_ loaded: [LoadedMangaPage]) {
+    func applyForward(_ loaded: [LoadedMangaPage]) {
         guard let containerView, !loaded.isEmpty else { return }
         var window = MangaPageWindow(pages: pages.map(\.id), capacity: pageWindowCapacity)
         let removed = window.append(loaded.map(\.id))
@@ -387,7 +433,7 @@ final class MangaViewController: NSViewController {
 #endif
     }
 
-    private func requestBackward() {
+    func requestBackward() {
         guard let anchor = pages.first?.id else { return }
         isLoadingPageWindow = true
         let pageCount = self.pageCount
@@ -424,13 +470,13 @@ final class MangaViewController: NSViewController {
         }
     }
 
-    private func startInitialForwardPrefetchIfNeeded() {
+    func startInitialForwardPrefetchIfNeeded() {
         guard shouldPrefetchForwardAfterInitialBackward else { return }
         shouldPrefetchForwardAfterInitialBackward = false
         requestForward()
     }
 
-    private func applyBackward(_ loaded: [LoadedMangaPage]) {
+    func applyBackward(_ loaded: [LoadedMangaPage]) {
         guard let containerView, !loaded.isEmpty else { return }
         var window = MangaPageWindow(pages: pages.map(\.id), capacity: pageWindowCapacity)
         let removed = window.prepend(loaded.map(\.id))
@@ -452,48 +498,6 @@ final class MangaViewController: NSViewController {
             print("[manga] evicted side=forward pages=\(removed.count) available=\(pages.count)")
         }
 #endif
-    }
-
-    private static func nextPage(after id: MangaPageID, pageCount: (Int) -> Int) -> MangaPageID? {
-        MangaPageNavigation.nextPage(after: id, pageCount: pageCount)
-    }
-
-    private static func previousPage(before id: MangaPageID, pageCount: (Int) -> Int) -> MangaPageID? {
-        MangaPageNavigation.previousPage(before: id, pageCount: pageCount)
-    }
-
-#if DEBUG
-    private func updateDebugPosition(visibleRange: Range<Int>) {
-        guard pages.indices.contains(visibleRange.lowerBound) else { return }
-        let page = pages[visibleRange.lowerBound]
-        guard lastDebugPageID != page.id else { return }
-        lastDebugPageID = page.id
-        let title = titleForPage(page.id)
-        debugPositionLabel.stringValue = "\(title) chapter \(page.id.chapter + 1) page \(page.id.page + 1)"
-    }
-#else
-    private func updateDebugPosition(visibleRange: Range<Int>) {}
-#endif
-
-    override func viewDidLayout() {
-        super.viewDidLayout()
-        scrollView.frame = view.bounds
-        containerView?.relayout()
-        updateDebugPosition(visibleRange: containerView?.visiblePageRange(in: scrollView.contentView.bounds) ?? 0..<0)
-#if DEBUG
-        debugPositionLabel.frame = NSRect(
-            x: max(0, view.bounds.width - 340),
-            y: 8,
-            width: min(332, view.bounds.width),
-            height: 20
-        )
-#endif
-    }
-
-    deinit {
-        if let observer = boundsObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
     }
 }
 

@@ -114,7 +114,13 @@ final class LibraryViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        setupHeader()
+        setupGridScrollView()
+        setupTableView()
+        updateVisibility()
+    }
 
+    private func setupHeader() {
         headerView = NSView(frame: .zero)
         headerView.autoresizingMask = [.width, .minYMargin]
 
@@ -129,7 +135,9 @@ final class LibraryViewController: NSViewController {
         backButton.frame = NSRect(x: 12, y: 4, width: 60, height: 28)
         headerView.addSubview(backButton)
         view.addSubview(headerView)
+    }
 
+    private func setupGridScrollView() {
         let contentFrame = NSRect(x: 0, y: 0, width: view.bounds.width, height: max(0, view.bounds.height - 36))
 
         gridScrollView = NSScrollView(frame: contentFrame)
@@ -156,6 +164,10 @@ final class LibraryViewController: NSViewController {
 
         gridScrollView.documentView = collectionView
         view.addSubview(gridScrollView)
+    }
+
+    private func setupTableView() {
+        let contentFrame = NSRect(x: 0, y: 0, width: view.bounds.width, height: max(0, view.bounds.height - 36))
 
         tableViewScrollView = NSScrollView(frame: contentFrame)
         tableViewScrollView.autoresizingMask = [.width, .height]
@@ -182,8 +194,6 @@ final class LibraryViewController: NSViewController {
 
         tableViewScrollView.documentView = tableView
         view.addSubview(tableViewScrollView)
-
-        updateVisibility()
     }
 
     override func viewDidLayout() {
@@ -254,10 +264,12 @@ extension LibraryViewController: NSCollectionViewDataSource, NSCollectionViewDel
         _ collectionView: NSCollectionView,
         itemForRepresentedObjectAt indexPath: IndexPath
     ) -> NSCollectionViewItem {
-        let item = collectionView.makeItem(
+        guard let item = collectionView.makeItem(
             withIdentifier: NSUserInterfaceItemIdentifier("cover"),
             for: indexPath
-        ) as! CoverGridItem
+        ) as? CoverGridItem else {
+            return NSCollectionViewItem()
+        }
         let s = series[indexPath.item]
         item.configure(coverURL: s.coverURL, title: s.name)
         return item
