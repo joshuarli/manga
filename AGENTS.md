@@ -31,9 +31,11 @@ Entries are sorted with `localizedStandardCompare` for natural sort order. Extra
 
 ## Image Preloading
 
-Images are loaded synchronously in `MangaViewController.viewDidLoad` via `NSImage(contentsOfFile:)`. `NSImage` is lazy by default — pixel data is decoded on first draw, not at load time. Each `NSImageView` is layer-backed (`wantsLayer = true`). When Core Animation composites a page for the first time, it decodes the image and caches the GPU texture in the layer. Subsequent scrolls past the same page reuse the cached texture without re-decoding.
+The initial page batch is loaded synchronously. Later pages are loaded on a background queue through `CGImageSourceCreateThumbnailAtIndex`, which decodes and downsamples each image to a maximum width of 2400 pixels before it reaches AppKit. This avoids retaining full-resolution manga pages and keeps decoding off the main thread.
 
-All pages are held in memory (no virtualization or discard).
+The retained page window is capped at 48 pages. When the window advances, pages are evicted from the opposite end. Forward and backward prefetches load up to 8 pages at a time. A new chapter starts by prefetching backward and then forward so scrolling in either direction is ready immediately. Completed prefetches are applied immediately; virtualization keeps this update small enough to avoid making the user wait at the document edge.
+
+`PageContainerView` virtualizes its layer-backed `NSImageView` children. It keeps views for the visible pages plus two viewport-heights of overscan, recycles views that leave that range, and assigns images only when a view enters the range. Page geometry remains based on the retained page window, while offscreen views are not kept in the view hierarchy.
 
 ## GPU Cache Attempt (Abandoned)
 
@@ -63,13 +65,21 @@ context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
 let decoded = context.makeImage()
 ```
 
+## Performance
+
+Keep image decoding, downsampling, and archive access off the main thread. Use ImageIO thumbnail creation rather than loading full-resolution images through `NSImage(contentsOfFile:)`. The 48-page retained window is the memory bound; do not increase it casually because decoded pixel memory is substantially larger than compressed CBZ data.
+
+Keep page view virtualization and view recycling separate from page loading. Loading a page should not create a permanent `NSImageView`, and scrolling should not rebuild the entire page view stack. Prefetch in batches and use the scroll direction and remaining-page threshold to stay ahead of fast scrolling. Completed batches must be applied immediately so the document never ends at an uncommitted prefetch boundary.
+
+The abandoned BGRA8 redraw experiment below is not a preferred optimization. It added substantial transient memory pressure without a measurable scrolling benefit.
+
 ## Viewer Layout
 
-Pages are rendered as `NSImageView` subviews (each `wantsLayer = true`) inside a `PageContainerView`. The container overrides `isFlipped` to return `true`, placing origin (0, 0) at top-left so the first page appears at the top of the scroll view.
+Pages are rendered as recycled `NSImageView` subviews (each `wantsLayer = true`) inside a `PageContainerView`. The container overrides `isFlipped` to return `true`, placing origin (0, 0) at top-left so the first page appears at the top of the scroll view.
 
 Images scale proportionally to fit the container width via `NSImageView.imageScaling = .scaleProportionallyUpOrDown`. Vertical layout with no gaps between pages. Scrolling is smooth and continuous — no page snapping.
 
-Window resizes trigger relayout of all pages via `viewDidLayout()` on the view controller. The `PageContainerView.relayout()` method reads `enclosingScrollView.contentSize.width` to determine the new page width and recalculates every image view frame.
+Window resizes trigger relayout of retained page geometry via `viewDidLayout()` on the view controller. The `PageContainerView.relayout()` method reads `enclosingScrollView.contentSize.width` to determine the new page width, recalculates page frames, and updates only the visible and overscanned image views.
 
 ## Startup Flow
 

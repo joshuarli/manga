@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 
 struct MangaPageID: Hashable {
     let chapter: Int
@@ -52,13 +53,21 @@ final class CBZBook {
         }
     }
 
-    func image(at index: Int) -> NSImage? {
+    func image(at index: Int, maxPixelWidth: Int = 2400) -> NSImage? {
         guard entries.indices.contains(index) else { return nil }
-        guard let image = NSImage(contentsOf: entries[index]) else { return nil }
-        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            return image
+        guard let source = CGImageSourceCreateWithURL(entries[index] as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixelWidth)
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
         }
-        return NSImage(cgImage: cgImage, size: image.size)
+        return NSImage(
+            cgImage: cgImage,
+            size: NSSize(width: cgImage.width, height: cgImage.height)
+        )
     }
 
     func cleanup() {
@@ -112,7 +121,7 @@ final class MangaWindowController: NSWindowController {
         let vc = MangaViewController(
             chapterIndex: currentIndex,
             pageCount: { [weak self] chapter in self?.pageCount(chapter: chapter) ?? 0 },
-            loadPage: { [weak self] id in self?.loadPage(id) },
+            loadPage: { [weak self] id, maxPixelWidth in self?.loadPage(id, maxPixelWidth: maxPixelWidth) },
             titleForPage: { [weak self] id in self?.title(for: id) ?? "" }
         )
         self.viewController = vc
@@ -162,7 +171,7 @@ final class MangaWindowController: NSWindowController {
         book(at: chapter)?.pageCount ?? 0
     }
 
-    private func loadPage(_ id: MangaPageID) -> NSImage? {
+    private func loadPage(_ id: MangaPageID, maxPixelWidth: Int) -> NSImage? {
         guard chapters.indices.contains(id.chapter) else {
 #if DEBUG
             print("[manga] skipped invalid chapter index \(id.chapter) for page \(id.page + 1)")
@@ -176,7 +185,7 @@ final class MangaWindowController: NSWindowController {
 #endif
             return nil
         }
-        let image = book.image(at: id.page)
+        let image = book.image(at: id.page, maxPixelWidth: maxPixelWidth)
 #if DEBUG
         if image != nil {
             print("[manga] loaded file=\(chapterURL.path) chapterIndex=\(id.chapter) pageIndex=\(id.page) pageCount=\(book.pageCount)")
@@ -192,24 +201,20 @@ final class MangaWindowController: NSWindowController {
 }
 
 final class MangaViewController: NSViewController {
-    private let pageWindowCapacity = 60
-    private let prefetchBatchSize = 12
-    private let prefetchThreshold = 24
+    private let pageWindowCapacity = 48
+    private let prefetchBatchSize = 8
+    private let prefetchThreshold = 20
     private let startingChapter: Int
     private let pageCount: (Int) -> Int
-    private let loadPage: (MangaPageID) -> NSImage?
+    private let loadPage: (MangaPageID, Int) -> NSImage?
     private let titleForPage: (MangaPageID) -> String
     private let scrollView = NSScrollView()
     private var containerView: PageContainerView?
     private var boundsObserver: NSObjectProtocol?
-    private var liveScrollObservers: [NSObjectProtocol] = []
     private var pages: [LoadedMangaPage] = []
     private var isMaintainingPageWindow = false
     private var isLoadingPageWindow = false
     private var lastScrollY: CGFloat?
-    private var isLiveScrolling = false
-    private var pendingForward: (MangaPageID, [LoadedMangaPage])?
-    private var pendingBackward: (MangaPageID, [LoadedMangaPage])?
     private var shouldPrefetchForwardAfterInitialBackward = false
 #if DEBUG
     private let debugPositionLabel = NSTextField(labelWithString: "")
@@ -219,7 +224,7 @@ final class MangaViewController: NSViewController {
     init(
         chapterIndex: Int,
         pageCount: @escaping (Int) -> Int,
-        loadPage: @escaping (MangaPageID) -> NSImage?,
+        loadPage: @escaping (MangaPageID, Int) -> NSImage?,
         titleForPage: @escaping (MangaPageID) -> String
     ) {
         self.startingChapter = chapterIndex
@@ -270,21 +275,6 @@ final class MangaViewController: NSViewController {
         ) { [weak self] _ in
             self?.maintainPageWindow()
         }
-        liveScrollObservers.append(NotificationCenter.default.addObserver(
-            forName: NSScrollView.willStartLiveScrollNotification,
-            object: scrollView,
-            queue: .main
-        ) { [weak self] _ in
-            self?.isLiveScrolling = true
-        })
-        liveScrollObservers.append(NotificationCenter.default.addObserver(
-            forName: NSScrollView.didEndLiveScrollNotification,
-            object: scrollView,
-            queue: .main
-        ) { [weak self] _ in
-            self?.isLiveScrolling = false
-            self?.applyPendingWindowUpdate()
-        })
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.shouldPrefetchForwardAfterInitialBackward = true
@@ -301,7 +291,7 @@ final class MangaViewController: NSViewController {
     }
 
     private func loadedPage(_ id: MangaPageID) -> LoadedMangaPage? {
-        guard let image = loadPage(id) else { return nil }
+        guard let image = loadPage(id, 2400) else { return nil }
         return LoadedMangaPage(id: id, image: image)
     }
 
@@ -315,9 +305,10 @@ final class MangaViewController: NSViewController {
         let scrollingDown = lastScrollY.map { currentY > $0 + 0.5 } ?? false
         let scrollingUp = lastScrollY.map { currentY < $0 - 0.5 } ?? false
         lastScrollY = currentY
+        containerView.updateVisiblePageViews(in: scrollView.contentView.bounds)
         let visibleRange = containerView.visiblePageRange(in: scrollView.contentView.bounds)
         updateDebugPosition(visibleRange: visibleRange)
-        guard !isLoadingPageWindow, pendingForward == nil, pendingBackward == nil else { return }
+        guard !isLoadingPageWindow else { return }
         if scrollingDown, pages.count - visibleRange.upperBound <= prefetchThreshold {
             requestForward()
         } else if scrollingUp, scrollView.contentView.bounds.minY < -1 {
@@ -330,6 +321,7 @@ final class MangaViewController: NSViewController {
         isLoadingPageWindow = true
         let pageCount = self.pageCount
         let loadPage = self.loadPage
+        let maxPixelWidth = 2400
         let batchSize = prefetchBatchSize
 #if DEBUG
         print("[manga] prefetch request direction=forward after=chapter:\(anchor.chapter + 1) page:\(anchor.page + 1) batch=\(batchSize) available=\(pages.count)")
@@ -342,7 +334,7 @@ final class MangaViewController: NSViewController {
                 next = id
             }
             let loaded = ids.compactMap { id -> LoadedMangaPage? in
-                guard let image = loadPage(id) else { return nil }
+                guard let image = loadPage(id, maxPixelWidth) else { return nil }
                 return LoadedMangaPage(id: id, image: image)
             }
             DispatchQueue.main.async {
@@ -355,11 +347,7 @@ final class MangaViewController: NSViewController {
 #if DEBUG
                 print("[manga] prefetch complete direction=forward loaded=\(loaded.count) available=\(self.pages.count + loaded.count)")
 #endif
-                if self.isLiveScrolling {
-                    self.pendingForward = (anchor, loaded)
-                } else {
-                    self.applyForward(loaded)
-                }
+                self.applyForward(loaded)
             }
         }
     }
@@ -380,6 +368,11 @@ final class MangaViewController: NSViewController {
         let y = max(0, oldY - removedHeight)
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: y))
         lastScrollY = y
+#if DEBUG
+        if !removed.isEmpty {
+            print("[manga] evicted side=backward pages=\(removed.count) available=\(pages.count)")
+        }
+#endif
     }
 
     private func requestBackward() {
@@ -387,6 +380,7 @@ final class MangaViewController: NSViewController {
         isLoadingPageWindow = true
         let pageCount = self.pageCount
         let loadPage = self.loadPage
+        let maxPixelWidth = 2400
         let batchSize = prefetchBatchSize
 #if DEBUG
         print("[manga] prefetch request direction=backward before=chapter:\(anchor.chapter + 1) page:\(anchor.page + 1) batch=\(batchSize) available=\(pages.count)")
@@ -399,7 +393,7 @@ final class MangaViewController: NSViewController {
                 previous = id
             }
             let loaded = ids.compactMap { id -> LoadedMangaPage? in
-                guard let image = loadPage(id) else { return nil }
+                guard let image = loadPage(id, maxPixelWidth) else { return nil }
                 return LoadedMangaPage(id: id, image: image)
             }
             DispatchQueue.main.async {
@@ -412,12 +406,8 @@ final class MangaViewController: NSViewController {
 #if DEBUG
                 print("[manga] prefetch complete direction=backward loaded=\(loaded.count) available=\(self.pages.count + loaded.count)")
 #endif
-                if self.isLiveScrolling {
-                    self.pendingBackward = (anchor, loaded)
-                } else {
-                    self.applyBackward(loaded)
-                    self.startInitialForwardPrefetchIfNeeded()
-                }
+                self.applyBackward(loaded)
+                self.startInitialForwardPrefetchIfNeeded()
             }
         }
     }
@@ -444,22 +434,11 @@ final class MangaViewController: NSViewController {
         let y = oldY + addedHeight
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: y))
         lastScrollY = y
-    }
-
-    private func applyPendingWindowUpdate() {
-        if let pendingForward,
-           pages.last?.id == pendingForward.0 {
-            self.pendingForward = nil
-            applyForward(pendingForward.1)
-        } else if let pendingBackward,
-                  pages.first?.id == pendingBackward.0 {
-            self.pendingBackward = nil
-            applyBackward(pendingBackward.1)
-            startInitialForwardPrefetchIfNeeded()
-        } else {
-            pendingForward = nil
-            pendingBackward = nil
+#if DEBUG
+        if !removed.isEmpty {
+            print("[manga] evicted side=forward pages=\(removed.count) available=\(pages.count)")
         }
+#endif
     }
 
     private static func nextPage(after id: MangaPageID, pageCount: (Int) -> Int) -> MangaPageID? {
@@ -502,7 +481,6 @@ final class MangaViewController: NSViewController {
         if let observer = boundsObserver {
             NotificationCenter.default.removeObserver(observer)
         }
-        liveScrollObservers.forEach(NotificationCenter.default.removeObserver)
     }
 }
 
@@ -510,13 +488,13 @@ final class PageContainerView: NSView {
     override var isFlipped: Bool { true }
 
     private var pages: [LoadedMangaPage]
-    private var imageViews: [NSImageView]
+    private var pageFrames: [NSRect] = []
+    private var imageViews: [MangaPageID: NSImageView] = [:]
+    private var recycledImageViews: [NSImageView] = []
 
     init(pages: [LoadedMangaPage]) {
         self.pages = pages
-        self.imageViews = pages.map { _ in PageContainerView.makeImageView() }
         super.init(frame: .zero)
-        imageViews.forEach(addSubview)
     }
 
     required init?(coder: NSCoder) {
@@ -524,12 +502,7 @@ final class PageContainerView: NSView {
     }
 
     func setPages(_ pages: [LoadedMangaPage]) {
-        let existingViews = Dictionary(uniqueKeysWithValues: zip(self.pages, imageViews).map { ($0.0.id, $0.1) })
-        let updatedViews = pages.map { existingViews[$0.id] ?? PageContainerView.makeImageView() }
-        imageViews.filter { view in !updatedViews.contains { $0 === view } }.forEach { $0.removeFromSuperview() }
-        updatedViews.filter { $0.superview == nil }.forEach(addSubview)
         self.pages = pages
-        imageViews = updatedViews
     }
 
     func height(of pages: [LoadedMangaPage]) -> CGFloat {
@@ -543,7 +516,7 @@ final class PageContainerView: NSView {
     }
 
     func visiblePageRange(in bounds: NSRect) -> Range<Int> {
-        let visible = imageViews.indices.filter { imageViews[$0].frame.intersects(bounds) }
+        let visible = pageFrames.indices.filter { pageFrames[$0].intersects(bounds) }
         guard let first = visible.first, let last = visible.last else { return 0..<0 }
         return first..<(last + 1)
     }
@@ -554,20 +527,50 @@ final class PageContainerView: NSView {
         guard width > 0 else { return }
 
         var y: CGFloat = 0
-        for (index, page) in pages.enumerated() {
-            let imageView = imageViews[index]
-            guard page.image.size.width > 0, page.image.size.height > 0 else { continue }
-            if imageView.image !== page.image {
-                imageView.image = page.image
+        pageFrames = pages.map { page in
+            guard page.image.size.width > 0, page.image.size.height > 0 else {
+                return NSRect(x: 0, y: y, width: width, height: 0)
             }
             let height = round(width * page.image.size.height / page.image.size.width)
-            imageView.frame = NSRect(x: 0, y: y, width: width, height: height)
+            let pageFrame = NSRect(x: 0, y: y, width: width, height: height)
             y += height
+            return pageFrame
         }
         frame.size = CGSize(width: width, height: max(y, 1))
+        updateVisiblePageViews(in: scrollView.contentView.bounds)
     }
 
-    private static func makeImageView() -> NSImageView {
+    func updateVisiblePageViews(in bounds: NSRect) {
+        guard pageFrames.count == pages.count else { return }
+        let overscan = bounds.insetBy(dx: 0, dy: -max(bounds.height * 2, 1000))
+        let visibleIDs = Set(pageFrames.indices.compactMap { index in
+            pageFrames[index].intersects(overscan) ? pages[index].id : nil
+        })
+
+        let staleIDs = imageViews.keys.filter { !visibleIDs.contains($0) }
+        for id in staleIDs {
+            guard let imageView = imageViews.removeValue(forKey: id) else { continue }
+            imageView.removeFromSuperview()
+            imageView.image = nil
+            recycledImageViews.append(imageView)
+        }
+
+        for index in pageFrames.indices where visibleIDs.contains(pages[index].id) {
+            let id = pages[index].id
+            let imageView = imageViews[id] ?? makeImageView()
+            if imageViews[id] == nil {
+                imageViews[id] = imageView
+                addSubview(imageView)
+            }
+            imageView.image = pages[index].image
+            imageView.frame = pageFrames[index]
+        }
+    }
+
+    private func makeImageView() -> NSImageView {
+        if let imageView = recycledImageViews.popLast() {
+            return imageView
+        }
         let imageView = NSImageView()
         imageView.wantsLayer = true
         imageView.imageScaling = .scaleProportionallyUpOrDown
