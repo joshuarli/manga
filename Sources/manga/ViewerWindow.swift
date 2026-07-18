@@ -210,6 +210,7 @@ final class MangaViewController: NSViewController {
     private var isLiveScrolling = false
     private var pendingForward: (MangaPageID, [LoadedMangaPage])?
     private var pendingBackward: (MangaPageID, [LoadedMangaPage])?
+    private var shouldPrefetchForwardAfterInitialBackward = false
 #if DEBUG
     private let debugPositionLabel = NSTextField(labelWithString: "")
     private var lastDebugPageID: MangaPageID?
@@ -285,7 +286,9 @@ final class MangaViewController: NSViewController {
             self?.applyPendingWindowUpdate()
         })
         DispatchQueue.main.async { [weak self] in
-            self?.requestForward()
+            guard let self else { return }
+            self.shouldPrefetchForwardAfterInitialBackward = true
+            self.requestBackward()
         }
     }
 
@@ -413,9 +416,16 @@ final class MangaViewController: NSViewController {
                     self.pendingBackward = (anchor, loaded)
                 } else {
                     self.applyBackward(loaded)
+                    self.startInitialForwardPrefetchIfNeeded()
                 }
             }
         }
+    }
+
+    private func startInitialForwardPrefetchIfNeeded() {
+        guard shouldPrefetchForwardAfterInitialBackward else { return }
+        shouldPrefetchForwardAfterInitialBackward = false
+        requestForward()
     }
 
     private func applyBackward(_ loaded: [LoadedMangaPage]) {
@@ -445,6 +455,7 @@ final class MangaViewController: NSViewController {
                   pages.first?.id == pendingBackward.0 {
             self.pendingBackward = nil
             applyBackward(pendingBackward.1)
+            startInitialForwardPrefetchIfNeeded()
         } else {
             pendingForward = nil
             pendingBackward = nil
