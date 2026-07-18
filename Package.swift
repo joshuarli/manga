@@ -9,5 +9,9 @@ let package = Package(
             name: "manga",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        .testTarget(
+            name: "mangaTests",
+            dependencies: ["manga"]
+        )
     ]
 )
